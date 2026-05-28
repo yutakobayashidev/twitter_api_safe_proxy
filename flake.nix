@@ -107,14 +107,34 @@
             { settings ? { } }:
             pkgs.writeShellApplication {
               name = "twitter-api-safe-proxy";
-              runtimeInputs = with pkgs; [ nodejs_24 playwright-driver.browsers ];
+              runtimeInputs = with pkgs; [
+                nodejs_24
+                playwright-driver.browsers
+                jq
+              ];
               text = ''
                 export PLAYWRIGHT_BROWSERS_PATH=${pwBrowsers}
                 export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
                 RUNTIME=${mkRuntime settings}
+
                 if [ -n "''${TWITTER_SETTINGS_FILE:-}" ]; then
                   cp "$TWITTER_SETTINGS_FILE" "$RUNTIME/settings.json"
+                elif [ -n "''${SETTINGS_BASE_FILE:-}" ]; then
+                  cp "$SETTINGS_BASE_FILE" "$RUNTIME/settings-base.json"
+                  if [ -n "''${SOPS_USER_DATA_DIRS:-}" ] && [ -f "$SOPS_USER_DATA_DIRS" ]; then
+                    jq -s '
+                      .[0] as $base | .[1] as $dirs |
+                      $base * {
+                        profiles: [$base.profiles[] | if $dirs[.name] then
+                          . * { browser: { userDataDir: $dirs[.name] } }
+                        else . end]
+                      }
+                    ' "$RUNTIME/settings-base.json" "$SOPS_USER_DATA_DIRS" > "$RUNTIME/settings.json"
+                  else
+                    mv "$RUNTIME/settings-base.json" "$RUNTIME/settings.json"
+                  fi
                 fi
+
                 [ -z "''${TWITTER_USER_DATA_DIR:-}" ] && export TWITTER_USER_DATA_DIR="$HOME/.twitter-api-safe-proxy/user_data"
                 mkdir -p "$TWITTER_USER_DATA_DIR"
                 cd $RUNTIME/packages/server
@@ -188,6 +208,11 @@
             cfg = config.services.twitter-api-safe-proxy;
             sys = pkgs.stdenv.hostPlatform.system;
             pkg = self.packages.${sys}.twitter-api-safe-proxy or self.lib.${sys}.makeProxy { };
+
+            settingsJson = pkgs.writeTextFile {
+              name = "settings-base.json";
+              text = builtins.toJSON cfg.settings;
+            };
           in
           {
             imports = [ sops-nix.nixosModules.sops ];
@@ -195,16 +220,58 @@
             options.services.twitter-api-safe-proxy = {
               enable = lib.mkEnableOption "Twitter API Safe Proxy";
 
-              sopsSettingsFile = lib.mkOption {
-                type = lib.types.nullOr lib.types.path;
-                default = null;
-                description = "Path to sops-decrypted settings.json";
+              settings = lib.mkOption {
+                type = lib.types.submodule {
+                  freeformType = lib.types.attrsOf lib.types.anything;
+                  options = {
+                    port = lib.mkOption {
+                      type = lib.types.int;
+                      default = 3000;
+                    };
+                    logLevel = lib.mkOption {
+                      type = lib.types.enum [ "fatal" "error" "warn" "info" "debug" "trace" ];
+                      default = "info";
+                    };
+                    logPrettyPrint = lib.mkOption {
+                      type = lib.types.bool;
+                      default = true;
+                    };
+                    profiles = lib.mkOption {
+                      type = lib.types.listOf (lib.types.submodule {
+                        freeformType = lib.types.attrsOf lib.types.anything;
+                        options = {
+                          name = lib.mkOption { type = lib.types.str; };
+                          browserType = lib.mkOption {
+                            type = lib.types.enum [ "chromium" "firefox" "webkit" ];
+                            default = "chromium";
+                          };
+                          browser = lib.mkOption {
+                            type = lib.types.submodule {
+                              freeformType = lib.types.attrsOf lib.types.anything;
+                              options = {
+                                headless = lib.mkOption {
+                                  type = lib.types.bool;
+                                  default = false;
+                                };
+                              };
+                            };
+                          };
+                        };
+                      });
+                      default = [ ];
+                    };
+                  };
+                };
+                default = { };
               };
 
-              settingsFile = lib.mkOption {
+              sopsUserDataDirs = lib.mkOption {
                 type = lib.types.nullOr lib.types.path;
                 default = null;
-                description = "Path to plaintext settings.json (alternative to sopsSettingsFile)";
+                description = ''
+                  Path to sops-decrypted JSON file mapping profile names to userDataDir paths.
+                  Example content: { "my-account": "/path/to/user_data" }
+                '';
               };
             };
 
@@ -213,20 +280,17 @@
                 description = "Twitter API Safe Proxy";
                 wantedBy = [ "multi-user.target" ];
                 after = [ "network.target" ];
+                environment = {
+                  SETTINGS_BASE_FILE = settingsJson;
+                } // lib.optionalAttrs (cfg.sopsUserDataDirs != null) {
+                  SOPS_USER_DATA_DIRS = cfg.sopsUserDataDirs;
+                };
                 serviceConfig = {
                   ExecStart = "${pkg}/bin/twitter-api-safe-proxy";
                   Restart = "always";
                   RestartSec = 10;
                   DynamicUser = true;
                   StateDirectory = "twitter-api-safe-proxy";
-                } // lib.optionalAttrs (cfg.sopsSettingsFile != null) {
-                  Environment = [
-                    "TWITTER_SETTINGS_FILE=${cfg.sopsSettingsFile}"
-                  ];
-                } // lib.optionalAttrs (cfg.settingsFile != null) {
-                  Environment = [
-                    "TWITTER_SETTINGS_FILE=${cfg.settingsFile}"
-                  ];
                 };
               };
             };
