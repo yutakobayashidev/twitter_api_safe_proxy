@@ -3,12 +3,10 @@
 
   inputs = {
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1";
-    sops-nix.url = "github:Mic92/sops-nix";
-    sops-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
-    { self, nixpkgs, sops-nix }:
+    { self, nixpkgs }:
     let
       systems = [
         "x86_64-linux"
@@ -107,11 +105,7 @@
             { settings ? { } }:
             pkgs.writeShellApplication {
               name = "twitter-api-safe-proxy";
-              runtimeInputs = with pkgs; [
-                nodejs_24
-                playwright-driver.browsers
-                jq
-              ];
+              runtimeInputs = with pkgs; [ nodejs_24 playwright-driver.browsers ];
               text = ''
                 export PLAYWRIGHT_BROWSERS_PATH=${pwBrowsers}
                 export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
@@ -119,24 +113,8 @@
 
                 if [ -n "''${TWITTER_SETTINGS_FILE:-}" ]; then
                   cp "$TWITTER_SETTINGS_FILE" "$RUNTIME/settings.json"
-                elif [ -n "''${SETTINGS_BASE_FILE:-}" ]; then
-                  cp "$SETTINGS_BASE_FILE" "$RUNTIME/settings-base.json"
-                  if [ -n "''${SOPS_USER_DATA_DIRS:-}" ] && [ -f "$SOPS_USER_DATA_DIRS" ]; then
-                    jq -s '
-                      .[0] as $base | .[1] as $dirs |
-                      $base * {
-                        profiles: [$base.profiles[] | if $dirs[.name] then
-                          . * { browser: { userDataDir: $dirs[.name] } }
-                        else . end]
-                      }
-                    ' "$RUNTIME/settings-base.json" "$SOPS_USER_DATA_DIRS" > "$RUNTIME/settings.json"
-                  else
-                    mv "$RUNTIME/settings-base.json" "$RUNTIME/settings.json"
-                  fi
                 fi
 
-                [ -z "''${TWITTER_USER_DATA_DIR:-}" ] && export TWITTER_USER_DATA_DIR="$HOME/.twitter-api-safe-proxy/user_data"
-                mkdir -p "$TWITTER_USER_DATA_DIR"
                 cd $RUNTIME/packages/server
                 exec node dist/server.js
               '';
@@ -205,53 +183,71 @@
             ...
           }:
           let
+            inherit (lib) mkEnableOption mkOption mkIf types;
             cfg = config.services.twitter-api-safe-proxy;
             sys = pkgs.stdenv.hostPlatform.system;
             pkg = self.packages.${sys}.twitter-api-safe-proxy or self.lib.${sys}.makeProxy { };
 
             settingsJson = pkgs.writeTextFile {
-              name = "settings-base.json";
+              name = "settings.json";
               text = builtins.toJSON cfg.settings;
             };
           in
           {
-            imports = [ sops-nix.nixosModules.sops ];
-
             options.services.twitter-api-safe-proxy = {
-              enable = lib.mkEnableOption "Twitter API Safe Proxy";
+              enable = mkEnableOption "Twitter API Safe Proxy";
 
-              settings = lib.mkOption {
-                type = lib.types.submodule {
-                  freeformType = lib.types.attrsOf lib.types.anything;
+              settings = mkOption {
+                type = types.submodule {
+                  freeformType = types.attrsOf types.anything;
                   options = {
-                    port = lib.mkOption {
-                      type = lib.types.int;
+                    port = mkOption {
+                      type = types.int;
                       default = 3000;
                     };
-                    logLevel = lib.mkOption {
-                      type = lib.types.enum [ "fatal" "error" "warn" "info" "debug" "trace" ];
+                    logLevel = mkOption {
+                      type = types.enum [ "fatal" "error" "warn" "info" "debug" "trace" ];
                       default = "info";
                     };
-                    logPrettyPrint = lib.mkOption {
-                      type = lib.types.bool;
+                    logPrettyPrint = mkOption {
+                      type = types.bool;
                       default = true;
                     };
-                    profiles = lib.mkOption {
-                      type = lib.types.listOf (lib.types.submodule {
-                        freeformType = lib.types.attrsOf lib.types.anything;
+                    profiles = mkOption {
+                      type = types.listOf (types.submodule {
+                        freeformType = types.attrsOf types.anything;
                         options = {
-                          name = lib.mkOption { type = lib.types.str; };
-                          browserType = lib.mkOption {
-                            type = lib.types.enum [ "chromium" "firefox" "webkit" ];
+                          name = mkOption { type = types.str; };
+                          browserType = mkOption {
+                            type = types.enum [ "chromium" "firefox" "webkit" ];
                             default = "chromium";
                           };
-                          browser = lib.mkOption {
-                            type = lib.types.submodule {
-                              freeformType = lib.types.attrsOf lib.types.anything;
+                          browser = mkOption {
+                            type = types.submodule {
+                              freeformType = types.attrsOf types.anything;
                               options = {
-                                headless = lib.mkOption {
-                                  type = lib.types.bool;
-                                  default = false;
+                                headless = mkOption {
+                                  type = types.bool;
+                                  default = true;
+                                };
+                                userDataDir = mkOption {
+                                  type = types.str;
+                                };
+                                viewport = mkOption {
+                                  type = types.nullOr (types.submodule {
+                                    freeformType = types.attrsOf types.anything;
+                                    options = {
+                                      width = mkOption {
+                                        type = types.int;
+                                        default = 1280;
+                                      };
+                                      height = mkOption {
+                                        type = types.int;
+                                        default = 720;
+                                      };
+                                    };
+                                  });
+                                  default = null;
                                 };
                               };
                             };
@@ -265,30 +261,51 @@
                 default = { };
               };
 
-              sopsUserDataDirs = lib.mkOption {
-                type = lib.types.nullOr lib.types.path;
-                default = null;
-                description = ''
-                  Path to sops-decrypted JSON file mapping profile names to userDataDir paths.
-                  Example content: { "my-account": "/path/to/user_data" }
-                '';
+              login = {
+                enable = mkOption {
+                  type = types.bool;
+                  default = false;
+                  description = ''
+                    Enable a login helper that runs the proxy with Xvfb for initial
+                    X.com authentication. After login, disable this and use the
+                    main service.
+                  '';
+                };
+                display = mkOption {
+                  type = types.int;
+                  default = 99;
+                  description = "Xvfb display number";
+                };
               };
             };
 
-            config = lib.mkIf cfg.enable {
+            config = mkIf cfg.enable {
               systemd.services.twitter-api-safe-proxy = {
                 description = "Twitter API Safe Proxy";
-                wantedBy = [ "multi-user.target" ];
+                wantedBy = mkIf (!cfg.login.enable) [ "multi-user.target" ];
                 after = [ "network.target" ];
                 environment = {
-                  SETTINGS_BASE_FILE = settingsJson;
-                } // lib.optionalAttrs (cfg.sopsUserDataDirs != null) {
-                  SOPS_USER_DATA_DIRS = cfg.sopsUserDataDirs;
+                  TWITTER_SETTINGS_FILE = settingsJson;
                 };
                 serviceConfig = {
                   ExecStart = "${pkg}/bin/twitter-api-safe-proxy";
                   Restart = "always";
                   RestartSec = 10;
+                  DynamicUser = true;
+                  StateDirectory = "twitter-api-safe-proxy";
+                };
+              };
+
+              systemd.services.twitter-api-safe-proxy-login = mkIf cfg.login.enable {
+                description = "Twitter API Safe Proxy Login Helper";
+                wantedBy = [ "multi-user.target" ];
+                after = [ "network.target" ];
+                environment = {
+                  TWITTER_SETTINGS_FILE = settingsJson;
+                };
+                serviceConfig = {
+                  ExecStart = "${pkgs.xvfb-run}/bin/xvfb-run -a -s '-screen 0 1280x720x24' ${pkg}/bin/twitter-api-safe-proxy";
+                  Restart = "no";
                   DynamicUser = true;
                   StateDirectory = "twitter-api-safe-proxy";
                 };
