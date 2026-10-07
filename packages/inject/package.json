@@ -27,7 +27,8 @@
 		"access": "public"
 	},
 	"scripts": {
-		"check": "node --check setup.js"
+		"check": "node --check setup.js",
+		"test": "node --test"
 	},
 	"keywords": [
 		"twitter",

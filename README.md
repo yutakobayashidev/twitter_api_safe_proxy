@@ -228,6 +228,7 @@ pnpm exec playwright install chromium
 ## Tests
 
 ```sh
+pnpm --filter twitter-api-safe-inject test
 pnpm --filter twitter-api-safe-relay-dashboard test
 pnpm --filter twitter-api-safe-request test
 pnpm --filter twitter-api-safe-relay test
