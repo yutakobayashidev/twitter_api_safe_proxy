@@ -1,7 +1,6 @@
-import assert from "node:assert/strict";
 import fs from "node:fs";
-import { test } from "node:test";
 import vm from "node:vm";
+import { expect, it } from "vitest";
 
 const source = fs.readFileSync(new URL("../setup.js", import.meta.url), "utf8");
 function defineExports(exports, definition) {
@@ -41,7 +40,7 @@ async function harness(factories) {
 	require.d = defineExports;
 	return { context, require, startup };
 }
-await test("legacy getter definitions retain liveness and become configurable", async () => {
+it("legacy getter definitions retain liveness and become configurable", async () => {
 	let value = 7;
 	const { require } = await harness({
 		1(_module, exports, require) {
@@ -49,53 +48,53 @@ await test("legacy getter definitions retain liveness and become configurable", 
 		},
 	});
 	const exports = require(1);
-	assert.equal(exports.answer, 7);
+	expect(exports.answer).toBe(7);
 	value = 9;
-	assert.equal(exports.answer, 9);
-	assert.equal(Object.getOwnPropertyDescriptor(exports, "answer").configurable, true);
-	assert.equal(require.d, defineExports);
+	expect(exports.answer).toBe(9);
+	expect(Object.getOwnPropertyDescriptor(exports, "answer").configurable).toBe(true);
+	expect(require.d).toBe(defineExports);
 });
-await test("flat array getters support getPlaceholder name", async () => {
+it("flat array getters support getPlaceholder name", async () => {
 	const { require } = await harness({
 		1(_module, exports, require) {
 			require.d(exports, ["getPlaceholder", () => "ready", "other", () => 12]);
 		},
 	});
-	assert.equal(require(1).getPlaceholder, "ready");
-	assert.equal(require(1).other, 12);
+	expect(require(1).getPlaceholder).toBe("ready");
+	expect(require(1).other).toBe(12);
 });
-await test("flat array constants preserve data descriptors and mixed entries", async () => {
+it("flat array constants preserve data descriptors and mixed entries", async () => {
 	const { require } = await harness({
 		1(_module, exports, require) {
 			require.d(exports, ["constant", 0, 42, "getter", () => 5, "zero", 0, 0]);
 		},
 	});
 	const exports = require(1);
-	assert.equal(exports.constant, 42);
-	assert.equal(exports.getter, 5);
-	assert.equal(exports.zero, 0);
+	expect(exports.constant).toBe(42);
+	expect(exports.getter).toBe(5);
+	expect(exports.zero).toBe(0);
 	const descriptor = Object.getOwnPropertyDescriptor(exports, "constant");
-	assert.equal(descriptor.writable, false);
-	assert.equal(descriptor.configurable, true);
-	assert.equal(descriptor.get, undefined);
+	expect(descriptor.writable).toBe(false);
+	expect(descriptor.configurable).toBe(true);
+	expect(descriptor.get).toBe(undefined);
 });
-await test("existing own export is preserved", async () => {
+it("existing own export is preserved", async () => {
 	const { require } = await harness({
 		1(_module, exports, require) {
 			Object.defineProperty(exports, "existing", { value: 11, enumerable: true });
 			require.d(exports, ["existing", () => 22, "fresh", () => 33]);
 		},
 	});
-	assert.equal(require(1).existing, 11);
-	assert.equal(require(1).fresh, 33);
+	expect(require(1).existing).toBe(11);
+	expect(require(1).fresh).toBe(33);
 });
-await test("nested factories restore wrapper then original helper", async () => {
+it("nested factories restore wrapper then original helper", async () => {
 	let innerHelper;
 	const { require } = await harness({
 		1(_module, exports, require) {
 			const wrapper = require.d;
-			assert.equal(require(2).value, 2);
-			assert.equal(require.d, wrapper);
+			expect(require(2).value).toBe(2);
+			expect(require.d).toBe(wrapper);
 			require.d(exports, ["value", () => 1]);
 		},
 		2(_module, exports, require) {
@@ -103,20 +102,20 @@ await test("nested factories restore wrapper then original helper", async () => 
 			require.d(exports, ["value", 0, 2]);
 		},
 	});
-	assert.equal(require(1).value, 1);
-	assert.notEqual(innerHelper, defineExports);
-	assert.equal(require.d, defineExports);
+	expect(require(1).value).toBe(1);
+	expect(innerHelper).not.toBe(defineExports);
+	expect(require.d).toBe(defineExports);
 });
-await test("factory errors restore original helper", async () => {
+it("factory errors restore original helper", async () => {
 	const { require } = await harness({
 		1() {
 			throw new Error("factory failure");
 		},
 	});
-	assert.throws(() => require(1), /factory failure/);
-	assert.equal(require.d, defineExports);
+	expect(() => require(1)).toThrow(/factory failure/);
+	expect(require.d).toBe(defineExports);
 });
-await test("client constructor interception and bridge dispatch work", async () => {
+it("client constructor interception and bridge dispatch work", async () => {
 	class Client {
 		get() {}
 		post() {}
@@ -131,10 +130,10 @@ await test("client constructor interception and bridge dispatch work", async () 
 		},
 	});
 	const Wrapped = require(1).Client;
-	assert.notEqual(Wrapped, Client);
+	expect(Wrapped).not.toBe(Client);
 	const client = new Wrapped();
 	await startup;
-	assert.equal(await context.elonmusk_114514_request({ property: "dispatch", query: ["test"] }), "response:test");
-	assert.ok(client instanceof Client);
-	assert.equal(require.d, defineExports);
+	expect(await context.elonmusk_114514_request({ property: "dispatch", query: ["test"] })).toBe("response:test");
+	expect(client).toBeInstanceOf(Client);
+	expect(require.d).toBe(defineExports);
 });

@@ -28,7 +28,7 @@
 	},
 	"scripts": {
 		"check": "node --check setup.js",
-		"test": "node --test"
+		"test": "vitest run"
 	},
 	"keywords": [
 		"twitter",
@@ -37,5 +37,8 @@
 		"playwright",
 		"api"
 	],
-	"license": "MIT"
+	"license": "MIT",
+	"devDependencies": {
+		"vitest": "^4.1.5"
+	}
 }
